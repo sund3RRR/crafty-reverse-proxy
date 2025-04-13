@@ -221,6 +221,10 @@ func (ps *ProxyServer) incrementPlayerCount() {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
+	if ok := ps.sm.SetState(StateRunning); !ok {
+		return
+	}
+
 	ps.playerCount++
 
 	if ps.shutdownTimer != nil {
