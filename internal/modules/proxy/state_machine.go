@@ -57,11 +57,11 @@ func (sm *StateMachine) updateState(old, new State) bool {
 func (sm *StateMachine) SetState(newState State) (ok bool) {
 	switch newState {
 	case StateStartingUp:
-		ok = sm.updateState(StateOff, StateStartingUp)
+		ok = sm.updateState(StateOff, StateStartingUp) ||
+			sm.updateState(StateShuttingDown, StateStartingUp)
 	case StateRunning:
 		ok = sm.updateState(StateStartingUp, StateRunning) ||
-			sm.updateState(StateEmpty, StateRunning) ||
-			sm.updateState(StateRunning, StateRunning)
+			sm.updateState(StateEmpty, StateRunning)
 	case StateEmpty:
 		ok = sm.updateState(StateRunning, StateEmpty)
 	case StateShuttingDown:

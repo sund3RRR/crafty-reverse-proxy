@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sund3RRR/crafty-reverse-proxy/config"
@@ -41,23 +41,22 @@ type ProxyServer struct {
 	logger Logger
 	crafty Crafty
 
-	shutdownTimer *time.Timer
+	shutdownTimer *Timer
 	sm            *StateMachine
-	mu            *sync.Mutex
 }
 
 func NewProxyServer(cfg config.Config, proxyCfg config.ServerType, logger Logger, crafty Crafty) *ProxyServer {
 	ps := &ProxyServer{
-		listenPort: proxyCfg.Listener.Port,
-		targetPort: proxyCfg.CraftyHost.Port,
-		protocol:   proxyCfg.Protocol,
-		listenAddr: fmt.Sprintf("%s:%d", proxyCfg.Listener.Addr, proxyCfg.Listener.Port),
-		targetAddr: fmt.Sprintf("%s:%d", proxyCfg.CraftyHost.Addr, proxyCfg.CraftyHost.Port),
-		cfg:        cfg,
-		logger:     logger,
-		crafty:     crafty,
-		sm:         NewStateMachine(StateOff, logger),
-		mu:         &sync.Mutex{},
+		listenPort:    proxyCfg.Listener.Port,
+		targetPort:    proxyCfg.CraftyHost.Port,
+		protocol:      proxyCfg.Protocol,
+		listenAddr:    fmt.Sprintf("%s:%d", proxyCfg.Listener.Addr, proxyCfg.Listener.Port),
+		targetAddr:    fmt.Sprintf("%s:%d", proxyCfg.CraftyHost.Addr, proxyCfg.CraftyHost.Port),
+		cfg:           cfg,
+		logger:        logger,
+		crafty:        crafty,
+		shutdownTimer: NewTimer(),
+		sm:            NewStateMachine(StateOff, logger),
 	}
 
 	if ps.isServerRunning() {
@@ -97,22 +96,62 @@ func (ps *ProxyServer) ListenAndProxy(ctx context.Context) error {
 func (ps *ProxyServer) handleClient(ctx context.Context, client net.Conn) error {
 	defer client.Close()
 
+	// if Off or ShuttingDown, start the MC server
 	if ps.sm.GetState() == StateOff || ps.sm.GetState() == StateShuttingDown {
 		if err := ps.startMinecraftServer(); err != nil {
 			return err
 		}
+		if ok := ps.sm.SetState(StateStartingUp); !ok {
+			return ErrCannotSwitchState
+		}
 	}
+
+	// if StartingUp, wait for the MC server starting
 	if ps.sm.GetState() == StateStartingUp {
 		if err := ps.awaitForServerStart(ctx, ps.protocol, ps.targetAddr, awaitTimeout, tickerCooldown); err != nil {
 			return err
 		}
+		if ok := ps.sm.SetState(StateRunning); !ok {
+			return ErrCannotSwitchState
+		}
 	}
-	if ps.sm.GetState() == StateRunning || ps.sm.GetState() == StateEmpty {
+
+	// if server is empty, stop shutdown timer and switch to Running state
+	if ps.sm.GetState() == StateEmpty {
+		ps.shutdownTimer.Stop()
+		if ok := ps.sm.SetState(StateRunning); !ok {
+			return ErrCannotSwitchState
+		}
+	}
+
+	// if Running, start proxy
+	if ps.sm.GetState() == StateRunning {
 		if err := ps.startProxy(client); err != nil {
 			if !ps.isServerRunning() {
 				ps.sm.Reset(StateOff)
 			}
 			return err
+		}
+		// If it was the last player, schedule shutdown
+		if ps.getPlayerCount() == 0 {
+			if ok := ps.sm.SetState(StateEmpty); !ok {
+				return ErrCannotSwitchState
+			}
+			ps.scheduleShutdown(func() {
+				if ok := ps.sm.SetState(StateShuttingDown); !ok {
+					return
+				}
+
+				ps.logger.Info("No players left, shutting down MC server with port %d", ps.targetPort)
+				if err := ps.crafty.StopMcServer(ps.targetPort); err != nil {
+					ps.logger.Error("Failed to stop MC server: %v", err)
+					return
+				}
+
+				if ok := ps.sm.SetState(StateOff); !ok {
+					return
+				}
+			})
 		}
 	}
 
@@ -123,12 +162,6 @@ func (ps *ProxyServer) startProxy(client net.Conn) error {
 	serverConnection, err := net.DialTimeout(ps.protocol, ps.targetAddr, dialTimeout)
 	if err != nil {
 		return err
-	}
-
-	if ps.sm.GetState() == StateEmpty {
-		if ok := ps.sm.SetState(StateRunning); !ok {
-			return ErrCannotSwitchState
-		}
 	}
 
 	ps.incrementPlayerCount()
@@ -160,15 +193,12 @@ func (ps *ProxyServer) startProxy(client net.Conn) error {
 
 	return nil
 }
+
 func (ps *ProxyServer) startMinecraftServer() error {
 	ps.logger.Info("Server is not running. Starting server with port %d", ps.targetPort)
 	err := ps.crafty.StartMcServer(ps.targetPort)
 	if err != nil {
 		return err
-	}
-
-	if ok := ps.sm.SetState(StateStartingUp); !ok {
-		return ErrCannotSwitchState
 	}
 
 	return nil
@@ -208,56 +238,24 @@ func (ps *ProxyServer) awaitForServerStart(ctx context.Context, protocol, target
 			conn.Close()
 			ps.logger.Info("Server %s is up! Connected on attempt %d", target, attempt)
 
-			if ok := ps.sm.SetState(StateRunning); !ok {
-				return ErrCannotSwitchState
-			}
-
 			return nil
 		}
 	}
 }
 
+func (ps *ProxyServer) scheduleShutdown(shutdownFn func()) {
+	ps.logger.Info("No players left, scheduling MC server shutdown with port %d and timeout %s", ps.targetPort, ps.cfg.Timeout.String())
+	ps.shutdownTimer.Schedule(ps.cfg.Timeout, shutdownFn)
+}
+
 func (ps *ProxyServer) incrementPlayerCount() {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
-
-	ps.playerCount++
-
-	if ok := ps.sm.SetState(StateRunning); !ok {
-		return
-	}
-
-	if ps.shutdownTimer != nil {
-		_ = ps.shutdownTimer.Stop()
-		ps.shutdownTimer = nil
-	}
+	atomic.AddInt32(&ps.playerCount, 1)
 }
 
 func (ps *ProxyServer) decrementPlayerCount() {
-	ps.mu.Lock()
-	defer ps.mu.Unlock()
+	atomic.AddInt32(&ps.playerCount, -1)
+}
 
-	ps.playerCount--
-
-	if ps.playerCount == 0 {
-		if ok := ps.sm.SetState(StateEmpty); !ok {
-			return
-		}
-
-		ps.logger.Info("No players left, scheduling MC server shutdown with port %d and timeout %s", ps.targetPort, ps.cfg.Timeout.String())
-		ps.shutdownTimer = time.AfterFunc(ps.cfg.Timeout, func() {
-			if ok := ps.sm.SetState(StateShuttingDown); !ok {
-				return
-			}
-
-			ps.logger.Info("No players left, shutting down MC server with port %d", ps.targetPort)
-			if err := ps.crafty.StopMcServer(ps.targetPort); err != nil {
-				ps.logger.Error("Failed to stop MC server: %v", err)
-			}
-
-			if ok := ps.sm.SetState(StateOff); !ok {
-				return
-			}
-		})
-	}
+func (ps *ProxyServer) getPlayerCount() int32 {
+	return atomic.LoadInt32(&ps.playerCount)
 }
