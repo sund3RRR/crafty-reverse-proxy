@@ -2,14 +2,15 @@ package app
 
 import (
 	"context"
-	"craftyreverseproxy/config"
-	"craftyreverseproxy/internal/adapters/crafty"
-	"craftyreverseproxy/internal/modules/proxy"
-	"craftyreverseproxy/pkg/logger"
 	"crypto/tls"
 	"log"
 	"net/http"
 	"sync"
+
+	"github.com/sund3RRR/crafty-reverse-proxy/config"
+	"github.com/sund3RRR/crafty-reverse-proxy/internal/adapters/crafty"
+	"github.com/sund3RRR/crafty-reverse-proxy/internal/modules/proxy"
+	"github.com/sund3RRR/crafty-reverse-proxy/pkg/logger"
 )
 
 type App struct {
