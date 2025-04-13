@@ -242,9 +242,17 @@ func (ps *ProxyServer) decrementPlayerCount() {
 
 		ps.logger.Info("No players left, scheduling MC server shutdown with port %d and timeout %s", ps.targetPort, ps.cfg.Timeout.String())
 		ps.shutdownTimer = time.AfterFunc(ps.cfg.Timeout, func() {
-			if ps.sm.GetState() == StateEmpty {
-				ps.logger.Info("No players left, shutting down MC server with port %d", ps.targetPort)
-				ps.crafty.StopMcServer(ps.targetPort)
+			if ok := ps.sm.SetState(StateShuttingDown); !ok {
+				return
+			}
+
+			ps.logger.Info("No players left, shutting down MC server with port %d", ps.targetPort)
+			if err := ps.crafty.StopMcServer(ps.targetPort); err != nil {
+				ps.logger.Error("Failed to stop MC server: %v", err)
+			}
+
+			if ok := ps.sm.SetState(StateOff); !ok {
+				return
 			}
 		})
 	}
