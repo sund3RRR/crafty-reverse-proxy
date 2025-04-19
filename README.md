@@ -38,7 +38,7 @@ services:
 
   reverse-proxy:
     container_name: crafty-reverse-proxy
-    image: ghcr.io/sund3rrr/crafty-reverse-proxy:v1.2.1
+    image: ghcr.io/sund3rrr/crafty-reverse-proxy:latest
     ports:
       - "25565-25575:25565-25575"
     networks:
