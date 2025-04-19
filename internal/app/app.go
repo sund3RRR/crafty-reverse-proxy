@@ -66,7 +66,7 @@ func (app *App) Run(ctx context.Context) {
 			)
 
 			// Create a new connector responsible for managing connections to the Minecraft server.
-			connector := connector.New(app.logger, mcOperator, dialTimeout)
+			connector := connector.New(app.logger, app.cfg.AutoShutdown, mcOperator, dialTimeout)
 
 			// Create a new proxy server and start it.
 			server := proxy.New(serverConfig, app.logger, connector)

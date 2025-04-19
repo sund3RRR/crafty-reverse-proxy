@@ -20,9 +20,6 @@ const (
 
 	// stateEmpty indicates the server is running but has no active players.
 	stateEmpty
-
-	// stateShuttingDown indicates a shutdown has been scheduled.
-	stateShuttingDown
 )
 
 // String returns the human-readable name of a given state.
@@ -36,8 +33,6 @@ func String(state state) string {
 		return "Running"
 	case stateEmpty:
 		return "Empty"
-	case stateShuttingDown:
-		return "ShuttingDown"
 	default:
 		return "unknown"
 	}

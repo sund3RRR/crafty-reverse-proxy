@@ -61,7 +61,7 @@ func New(cfg config.ServerType, startUpTimeout, shutDownTimeout time.Duration, l
 
 // StartMinecraftServer starts the Minecraft server if it's not already running.
 func (so *ServerOperator) StartMinecraftServer() error {
-	so.logger.Info("Server is not running. Starting server with port %d", so.targetPort)
+	so.logger.Info("MC server is not running. Starting server with port %d", so.targetPort)
 	return so.crafty.StartMcServer(so.targetPort)
 }
 
@@ -112,13 +112,15 @@ func (so *ServerOperator) AwaitForServerStart(ctx context.Context) error {
 }
 
 // ScheduleShutdown sets a timer to shut down the server after a period of inactivity.
-func (so *ServerOperator) ScheduleShutdown() {
+func (so *ServerOperator) ScheduleShutdown(shutdownEmitter chan<- struct{}) {
 	so.logger.Info("No players left, scheduling MC server shutdown with port %d and timeout %s", so.targetPort, so.shutDownTimeout.String())
 	so.shutDownTimer = time.AfterFunc(so.shutDownTimeout, func() {
 		so.logger.Info("No players left, shutting down MC server with port %d", so.targetPort)
 		if err := so.crafty.StopMcServer(so.targetPort); err != nil {
 			so.logger.Error("Failed to stop MC server: %v", err)
+			return
 		}
+		shutdownEmitter <- struct{}{}
 	})
 }
 
