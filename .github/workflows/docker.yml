@@ -39,3 +39,4 @@ jobs:
           tags: |
             ghcr.io/sund3rrr/crafty-reverse-proxy:${{ env.VERSION }}
             ghcr.io/sund3rrr/crafty-reverse-proxy:latest
+          platforms: linux/amd64,linux/arm64
