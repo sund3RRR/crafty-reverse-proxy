@@ -1,3 +1,4 @@
+// Package main provides the main entry point for the application.
 package main
 
 import (
@@ -27,8 +28,8 @@ func main() {
 
 	logger := logger.New(cfg.LogLevel)
 
-	crafty := crafty.NewCrafty(cfg)
-	reverseProxyApp := app.NewApp(cfg, logger, crafty)
+	crafty := crafty.New(cfg)
+	reverseProxyApp := app.New(cfg, logger, crafty)
 
 	reverseProxyApp.Run(ctx)
 }
