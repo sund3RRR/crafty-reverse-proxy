@@ -1,56 +1,62 @@
+// Package proxy provides the main logic for handling proxying traffic between Minecraft clients and servers.
 package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
-	"time"
 
 	"github.com/sund3RRR/crafty-reverse-proxy/config"
 )
 
-const tickerCooldown = 1 * time.Second
-const awaitTimeout = 5 * time.Minute
-const dialTimeout = 1 * time.Second
-
-type (
-	Logger interface {
-		Debug(format string, args ...any)
-		Warn(format string, args ...any)
-		Info(format string, args ...any)
-		Error(format string, args ...any)
-	}
-	Crafty interface {
-		StartMcServer(port int) error
-		StopMcServer(port int) error
-	}
+var (
+	// ErrStartingServer is returned when the proxy server fails to start.
+	ErrStartingServer = errors.New("error starting server")
 )
 
-type ProxyServer struct {
+// Logger defines the logging interface used by ProxyServer.
+type Logger interface {
+	Debug(format string, args ...any)
+	Warn(format string, args ...any)
+	Info(format string, args ...any)
+	Error(format string, args ...any)
+}
+
+// Connector defines the interface for managing Minecraft server connections.
+type Connector interface {
+	StartLoop(ctx context.Context)
+	GetConnection(ctx context.Context) (net.Conn, error)
+	PutConnection(ctx context.Context, conn net.Conn) error
+}
+
+// Server handles proxying traffic between Minecraft clients and servers.
+type Server struct {
 	listenAddr string
 	targetAddr string
 	protocol   string
 
-	logger            Logger
-	connectController *ConnectController
+	logger    Logger
+	connector Connector
 }
 
-func NewProxyServer(cfg config.Config, proxyCfg config.ServerType, logger Logger, crafty Crafty) *ProxyServer {
-	serverOperator := NewServerOperator(proxyCfg, cfg.Timeout, logger, crafty)
-	ps := &ProxyServer{
-		protocol:          proxyCfg.Protocol,
-		listenAddr:        fmt.Sprintf("%s:%d", proxyCfg.Listener.Addr, proxyCfg.Listener.Port),
-		targetAddr:        fmt.Sprintf("%s:%d", proxyCfg.CraftyHost.Addr, proxyCfg.CraftyHost.Port),
-		logger:            logger,
-		connectController: NewConnectController(logger, serverOperator, dialTimeout),
+// New creates and returns a new ProxyServer instance based on the provided configuration.
+func New(proxyCfg config.ServerType, logger Logger, connector Connector) *Server {
+	ps := &Server{
+		protocol:   proxyCfg.Protocol,
+		listenAddr: fmt.Sprintf("%s:%d", proxyCfg.Listener.Addr, proxyCfg.Listener.Port),
+		targetAddr: fmt.Sprintf("%s:%d", proxyCfg.CraftyHost.Addr, proxyCfg.CraftyHost.Port),
+		logger:     logger,
+		connector:  connector,
 	}
-
 	return ps
 }
 
-func (ps *ProxyServer) ListenAndProxy(ctx context.Context) error {
-	ps.connectController.StartLoop(ctx)
+// ListenAndProxy starts the proxy server, listens for incoming client connections,
+// and forwards traffic to and from the Minecraft server.
+func (ps *Server) ListenAndProxy(ctx context.Context) error {
+	ps.connector.StartLoop(ctx)
 
 	listener, err := net.Listen(ps.protocol, ps.listenAddr)
 	if err != nil {
@@ -78,11 +84,17 @@ func (ps *ProxyServer) ListenAndProxy(ctx context.Context) error {
 	}
 }
 
-func (ps *ProxyServer) handleClient(ctx context.Context, client net.Conn) (err error) {
+// handleClient proxies data between the connected Minecraft client and server.
+func (ps *Server) handleClient(ctx context.Context, client net.Conn) (err error) {
 	defer client.Close()
 
-	serverConnection, err := ps.connectController.GetConnection(ctx)
-	defer ps.connectController.PutConnection(ctx, serverConnection)
+	serverConnection, err := ps.connector.GetConnection(ctx)
+	defer func() {
+		err := ps.connector.PutConnection(ctx, serverConnection)
+		if err != nil {
+			ps.logger.Error("Failed to put connection: %v", err)
+		}
+	}()
 	if err != nil {
 		return err
 	}
