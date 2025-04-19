@@ -85,7 +85,7 @@ func (ps *Server) ListenAndProxy(ctx context.Context) error {
 }
 
 // handleClient proxies data between the connected Minecraft client and server.
-func (ps *Server) handleClient(ctx context.Context, client net.Conn) (err error) {
+func (ps *Server) handleClient(ctx context.Context, client net.Conn) error {
 	defer client.Close()
 
 	serverConnection, err := ps.connector.GetConnection(ctx)
