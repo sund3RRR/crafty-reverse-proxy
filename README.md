@@ -1,57 +1,72 @@
-Hey there,
-I wrote this Go reverse proxy because I couldn't find anything that would have a similar behavior.
-I wanted to run a java server on my home server but I soon found out that, even in idle, it doubled my power draw.
-So this is my solution.
-The reverse proxy will automatically turn on the server when someone tries to connect and will also shut it down 2 minutes after everyone disconnected (small race conditions may apply and might turn off a bit sooner, but only if the server is empty).
+# Crafty Reverse Proxy
+A lightweight Go-based reverse proxy designed to manage the lifecycle of your Minecraft server automatically. It starts the server upon incoming connections and shuts it down after a period of inactivity, optimizing power consumption.
 
-It is mostly intended to be used in docker compose
-This is a sample of my config
+## Features
+- Automatic Server Startup: Initiates the Minecraft server when a connection attempt is detected.
+- Automatic Server Shutdown: Stops the server after 2 minutes of inactivity to conserve resources.
+- Docker Integration: Seamlessly integrates with Docker Compose setups.
+- Customizable Configuration: Easily adjust settings to fit your specific needs.
+
+## Getting Started
+Prerequisites
+- Docker and Docker Compose installed on your system.
+- A running instance of [Crafty Controller](https://craftycontrol.com/).
+
+1. Create the `docker-compose.yaml`:
 ```yaml
-crafty:
-  container_name: crafty
-  image: registry.gitlab.com/crafty-controller/crafty-4:latest
-  restart: always
-  ports:
+networks:
+  crafty-net:
+    driver: bridge
+
+services:
+  crafty:
+    container_name: crafty
+    image: registry.gitlab.com/crafty-controller/crafty-4:latest
+    restart: always
+    ports:
       - "8000:8000"
       - "8800:8800"
       - "8443:8443"
-  volumes:
+    networks:
+      - crafty-net
+    volumes:
       - ./crafty/backups:/crafty/backups
       - ./crafty/logs:/crafty/logs
       - ./crafty/servers:/crafty/servers
       - ./crafty/config:/crafty/app/config
       - ./crafty/import:/crafty/import
-craftyreverseproxy:
-  image: andreicerbulescu/craftyreverseproxy:latest
-  container_name: craftyreverseproxy
-  ports:
-    - "3120-3130:3120-3130"
-  volumes:
-    - ./craftyreverseproxy:/craftyproxy
-  depends_on:
-    crafty:
-      condition: service_started
-  restart: unless-stopped
+
+  reverse-proxy:
+    container_name: crafty-reverse-proxy
+    image: ghcr.io/sund3rrr/crafty-reverse-proxy:v1.2.1
+    ports:
+      - "25565-25575:25565-25575"
+    networks:
+      - crafty-net
+    volumes:
+      - ./reverse-proxy/config.yaml:/craftyproxy/config/config.yaml
+    depends_on:
+      - crafty
+    restart: unless-stopped
 ```
 
-You should create a folder in your folder called "craftyreverseproxy" and create a "config.yaml" file inside of it.
-This is a sample of the config.yaml:
+2. Configure your proxy in `reverse-proxy/config.yaml`:
 ```yaml
-api_url: "http://crafty:8443"
-username: "admin"
-password: "password"
-timeout: "2m"
-auto_shutdown: true
-log_level: "INFO"
+api_url: "http://crafty:8443" # Your's Crafty Controller URL
+username: "admin"             # Crafty Controller admin panel username 
+password: "password"          # Crafty Controller admin panel password
+auto_shutdown: true           # Auto shutdown feature
+timeout: "2m"                 # MC server Shutdown timeout 
+log_level: "INFO"             # Log Level
 
-addresses:
+addresses:                    # Set of addresses for handling and proxy
   - crafty_host:
-      addr: "crafty"
-      port: 25565
+      addr: "crafty"          # MC server address (hostname/IP)
+      port: 25565             # MC server port
     listener:
-      addr: "localhost"
-      port: 25565
-    protocol: "tcp"
+      addr: "localhost"       # Proxy address (hostname/IP)
+      port: 25565             # Proxy port
+    protocol: "tcp"           # Procotol (tcp only, udp is not supported)
   - crafty_host:
       addr: "crafty"
       port: 25566
@@ -61,7 +76,17 @@ addresses:
     protocol: "tcp"
 ```
 
-For docker compose, the ip is the container's name. Make sure you expose the ports of the craftyreverseproxy in your docker-compose.
+3) Start the services:
+```bash
+docker-compose up
+```
 
-You will connect to the crafty server using your_ip:external_port. For instance 192.168.0.30:3120
-I wanted to also implement UDP communication but it is a bit more trickier to auto shutdown the server.
+4) Connect to your MC server using proxy's host and port.
+
+## Contributing
+
+Contributions are welcome! Please fork the repository and submit a pull request for any enhancements or bug fixes.​
+
+## License
+
+This project is licensed under the Apache 2.0 License.​
