@@ -22,7 +22,7 @@ type ServerOperator interface {
 	IsServerRunning() bool
 	ConnectToServer() (net.Conn, error)
 	AwaitForServerStart(ctx context.Context) error
-	ScheduleShutdown()
+	ScheduleShutdown(shutdownEmitter chan<- struct{})
 	StopShuttingDown()
 }
 
@@ -42,32 +42,28 @@ type connPackage struct {
 // managing server state and lifecycle transitions based on connection requests.
 type Connector struct {
 	playerCount    int
+	autoshutdown   bool
 	state          state
 	dialTimeout    time.Duration
 	logger         Logger
 	serverOperator ServerOperator
 	getConnCh      chan struct{}
+	shutdownCh     chan struct{}
 	connCh         chan connPackage
 	putConnCh      chan net.Conn
 }
 
 // New creates and initializes a new Connector instance.
-func New(logger Logger, serverOperator ServerOperator, dialTimeout time.Duration) *Connector {
-	getInitialState := func(serverOperator ServerOperator) state {
-		if serverOperator.IsServerRunning() {
-			serverOperator.ScheduleShutdown()
-			return stateEmpty
-		}
-		return stateOff
-	}
-
+func New(logger Logger, autoshutdown bool, serverOperator ServerOperator, dialTimeout time.Duration) *Connector {
 	return &Connector{
 		playerCount:    0,
-		state:          getInitialState(serverOperator),
+		autoshutdown:   autoshutdown,
+		state:          stateOff,
 		dialTimeout:    dialTimeout,
 		logger:         logger,
 		serverOperator: serverOperator,
 		getConnCh:      make(chan struct{}),
+		shutdownCh:     make(chan struct{}),
 		connCh:         make(chan connPackage),
 		putConnCh:      make(chan net.Conn),
 	}
@@ -110,6 +106,10 @@ func (cc *Connector) PutConnection(ctx context.Context, conn net.Conn) error {
 // StartLoop begins the main loop that handles connection and disconnection events.
 // This method should be called once at application startup.
 func (cc *Connector) StartLoop(ctx context.Context) {
+	if cc.serverOperator.IsServerRunning() {
+		cc.shutdownMiddleware()
+	}
+
 	go func() {
 		for {
 			select {
@@ -122,10 +122,13 @@ func (cc *Connector) StartLoop(ctx context.Context) {
 				if conn != nil {
 					cc.playerCount--
 					if cc.playerCount == 0 {
-						cc.setState(stateEmpty)
-						cc.serverOperator.ScheduleShutdown()
+						cc.shutdownMiddleware()
 					}
 					conn.Close()
+				}
+			case <-cc.shutdownCh:
+				if cc.getState() == stateEmpty {
+					cc.setState(stateOff)
 				}
 			}
 		}
@@ -136,7 +139,7 @@ func (cc *Connector) StartLoop(ctx context.Context) {
 func (cc *Connector) processState(ctx context.Context) (net.Conn, error) {
 	for {
 		switch cc.getState() {
-		case stateOff, stateShuttingDown:
+		case stateOff:
 			if err := cc.serverOperator.StartMinecraftServer(); err != nil {
 				return nil, err
 			}
@@ -158,6 +161,13 @@ func (cc *Connector) processState(ctx context.Context) (net.Conn, error) {
 			cc.playerCount++
 			return serverConnection, nil
 		}
+	}
+}
+
+func (cc *Connector) shutdownMiddleware() {
+	cc.setState(stateEmpty)
+	if cc.autoshutdown {
+		cc.serverOperator.ScheduleShutdown(cc.shutdownCh)
 	}
 }
 
